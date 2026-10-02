@@ -1,0 +1,39 @@
+     HIST-123
+     HIST-124
+     HIST-125
+     HIST-126
+     HIST-127
+     HIST-128
+     HIST-129
+     HIST-130
+     HIST-131
+     HIST-132
+     HIST-133
+     HIST-134
+     HIST-135
+     HIST-136
+     HIST-137
+     HIST-138
+     HIST-139
+     HIST-140
+     HIST-141
+     HIST-142
+     HIST-143
+     HIST-144
+     HIST-145
+     HIST-146
+     HIST-147
+     HIST-148
+     HIST-149
+     HIST-150
+
+⏺ Captain, shipshape. That was just your own number sequence printing HIST-1 through HIST-150,
+  so nothing to act on.
+
+✻ Baked for 5s · done 3:43 PM
+
+──────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────
+  [Opus 5.5] 3% context
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents

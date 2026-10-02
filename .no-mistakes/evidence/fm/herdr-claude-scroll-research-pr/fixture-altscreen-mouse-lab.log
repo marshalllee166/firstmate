@@ -1,0 +1,68 @@
+SESSION=fm-lab-capscroll-385-22610
+viewer attached to fm-lab-capscroll-385-22610 (pid 686)
+PANE=w2:p1
+=== S1 main-screen scrollback via new capture ===
+rc=0 lines=300 esc_bytes=0
+first MAINLINE in capture: MAINLINE-102
+last MAINLINE in capture: MAINLINE-400
+visible rows: 39
+capture 5 lines ->
+MAINLINE-397
+MAINLINE-398
+MAINLINE-399
+MAINLINE-400
+marshall@marshall-eluve fm-cap-test.Sb3Ycb % 
+=== S2 idle alt-screen mouse agent ===
+reported agent idle
+{"agent":"claude","agent_status":"idle","status":null}
+START
+--- OLD capture (base, text recent 200) x2
+rc=0
+pane read w2:p1 --source recent --lines 200
+pane read w2:p1 --source recent --lines 200
+mouse log after OLD:
+START
+b'\x1b[<65;47;20M\x1b[<65;47;20M\x1b[<65;47;20M'
+b'\x1b[<64;47;20M\x1b[<64;47;20M\x1b[<64;47;20M'
+b'\x1b[<65;47;20M\x1b[<65;47;20M\x1b[<65;47;20M'
+b'\x1b[<65;47;20M\x1b[<65;47;20M\x1b[<65;47;20M'
+b'\x1b[<64;47;20M\x1b[<64;47;20M\x1b[<64;47;20M'
+b'\x1b[<65;47;20M\x1b[<65;47;20M\x1b[<65;47;20M'
+OLD wheel events: 6
+--- NEW capture (ansi) x3
+rc=0
+rc=0
+rc=0
+pane read w2:p1 --source recent --lines 200 --format ansi
+pane read w2:p1 --source recent --lines 200 --format ansi
+pane read w2:p1 --source recent --lines 200 --format ansi
+mouse log after NEW:
+NEW wheel events: 0
+NEW capture content (esc_bytes=0):
+ALTSCREEN-ROW-01
+ALTSCREEN-ROW-02
+ALTSCREEN-ROW-03
+ALTSCREEN-ROW-04
+ALTSCREEN-ROW-05
+ALTSCREEN-ROW-06
+ALTSCREEN-ROW-07
+ALTSCREEN-ROW-08
+ALTSCREEN-ROW-09
+ALTSCREEN-ROW-10
+ALTSCREEN-ROW-11
+ALTSCREEN-ROW-12
+ALTSCREEN-ROW-13
+ALTSCREEN-ROW-14
+fixture idle > 
+=== S3 fallback when ansi rejected ===
+rc=0
+pane read w2:p1 --source recent --lines 200 --format ansi
+pane read w2:p1 --source visible
+fallback content:
+ALTSCREEN-ROW-11
+ALTSCREEN-ROW-12
+ALTSCREEN-ROW-13
+ALTSCREEN-ROW-14
+fixture idle >
+FALLBACK wheel events: 0
+TEARDOWN ok

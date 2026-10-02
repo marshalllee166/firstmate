@@ -1,0 +1,45 @@
+SESSION=fm-lab-capscroll-38448-19986
+viewer attached to fm-lab-capscroll-38448-19986 (pid 38524)
+PANE=w2:p1
+{"agent":"claude","agent_status":"idle"}
+status: {"agent":"claude","agent_status":"idle"}
+visible rows=39 HIST in viewport=29 lowest=HIST-123
+--- NEW capture x3 (200-line fetch)
+NEW: lines=38 HIST lines=29 lowest=HIST-123 esc=0
+   3 pane read w2:p1 --source recent --lines 200 --format ansi
+{"agent":"claude","agent_status":"idle"}
+--- OLD capture x1 (text recent 200)
+OLD: lines=167 HIST lines=152 lowest=HIST-
+   1 pane read w2:p1 --source recent --lines 200
+--- fallback
+rc=0
+   1 pane read w2:p1 --source recent --lines 200 --format ansi
+   1 pane read w2:p1 --source visible
+fallback content:
+⏺ Captain, shipshape. That was just your own number sequence printing HIST-1 through HIST-150,
+  so nothing to act on.
+
+✻ Baked for 5s · done 3:43 PM
+
+──────────────────────────────────────────────────────────────────────────────────────────────
+❯
+──────────────────────────────────────────────────────────────────────────────────────────────
+  [Opus 5.5] 3% context
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+--- NEW capture tail:
+     HIST-144
+     HIST-145
+     HIST-146
+     HIST-147
+     HIST-148
+     HIST-149
+     HIST-150
+⏺ Captain, shipshape. That was just your own number sequence printing HIST-1 through HIST-150,
+  so nothing to act on.
+✻ Baked for 5s · done 3:43 PM
+──────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────
+  [Opus 5.5] 3% context
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+TEARDOWN ok

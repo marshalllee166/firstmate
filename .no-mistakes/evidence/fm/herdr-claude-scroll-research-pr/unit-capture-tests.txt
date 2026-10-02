@@ -1,0 +1,6 @@
+ok - fm_backend_herdr_capture: calls 'pane read <pane> --source recent --lines N --format ansi' with the session set
+ok - fm_backend_herdr_capture: reads ANSI (skipping herdr's alt-screen wheel harvest) and strips it to plain text
+ok - fm_backend_herdr_capture: falls back to a trimmed text visible read, never a text recent read
+ok - fm_backend_herdr_capture: works around the verified small-N '--lines' bug by over-fetching and trimming locally
+ok - fm_backend_herdr_capture: ensures the session and preserves pane read failure
+ok - fm_backend_herdr_composer_state: reports unknown when the pane cannot be captured

@@ -4894,6 +4894,13 @@ EOF
       hygiene_started=$(ps -o lstart= -p "$hygiene_worker" 2>/dev/null | sed 's/^[[:space:]]*//')
       printf '%s\t%s\n' "$hygiene_worker" "$hygiene_started" > "$hygiene_running"
     fi
+    # Opt-in idle slot reserve (bin/fm-slot-pool.sh owns its rules), started in
+    # the background so Treehouse calls never hold this loop; it takes each
+    # project's slot lock itself, so an overlapping run skips that clone.
+    if [ -e "$CONFIG/slot-idle-reserve" ]; then
+      ( FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" \
+          "$SCRIPT_DIR/fm-slot-pool.sh" reserve > "$STATE/.slot-reserve.last" 2>&1 & ) >/dev/null 2>&1
+    fi
     # Triage: in always-on mode a heartbeat is benign unless the cheap fleet-scan
     # turns up a captain-relevant status the per-wake path missed. Absorb the
     # no-change case (advance the schedule and back off exactly as wake() would,

@@ -25,10 +25,13 @@ For any custom `state/<id>.check.sh` you write yourself, keep it an ordinary sin
 Retire a custom check only through `bin/fm-check-unregister.sh <id>` (or `bin/fm-teardown.sh` for a spawned task); never hand-compose an `rm` with `$STATE`/`$ID`.
 
 The watcher owns teardown of a merged lane whose merge poll is armed, including a PR merged through `bin/fm-pr-merge.sh`, when the lane is parked or its home has `config/auto-land` ([`docs/configuration.md`](../../../docs/configuration.md#park-on-review)). Otherwise, firstmate tears it down after landing is confirmed.
+That ordinary landed teardown belongs to the home that spawned the worker: a secondmate runs it for its own merged children exactly as the main home does, and never leaves it as the main firstmate's call.
+Ask the captain first only when the captain has been working directly in that worker; a home-local captain rule on when to clean up still applies.
 A lane parked on review (`bin/fm-park.sh`) has no agent and relaunches itself on review activity; `bin/fm-park.sh park <id>` parks one clean lane on request and `bin/fm-park.sh resume <id> --trigger <text>` relaunches one by hand.
 
 Tear down any other ship task only after landing is confirmed.
 A teardown refusal for uncommitted or unlanded work is a stop-and-investigate result, never an obstacle to bypass.
+Teardown itself clears a leftover index that matches a commit on the base branch, so a merged worker refused for uncommitted changes holds something else; retry once the cause is fixed rather than escalating for `--force`.
 Never force teardown without explicit discard authority.
 After successful teardown, record completion, retain only the configured recent Done history, and re-evaluate queued work whose blockers and time gates have cleared.
 

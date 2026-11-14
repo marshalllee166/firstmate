@@ -2153,6 +2153,191 @@ EOF
   pass "ship copy with a nested clone is refused and its bytes stay"
 }
 
+# A squash-merged task copy whose interrupted return left the index and tree at
+# a commit on origin/main while HEAD stayed on the task commit: origin/main gains
+# the squash of feature.txt plus a later unrelated commit, and the copy is
+# switched to that tree without moving HEAD. Echoes the copy's task commit.
+setup_disposable_index_leftover() {
+  local case_dir=$1 head
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  append_pr_meta_for_current_head "$case_dir"
+  add_gh_pr_merged_for_head "$case_dir" "$head"
+  land_on_origin_main "$case_dir" feature.txt hello
+  land_on_origin_main "$case_dir" later.txt "after the merge"
+  git -C "$case_dir/project" fetch -q origin
+  git -C "$case_dir/wt" read-tree -m -u HEAD origin/main
+  printf '%s\n' "$head"
+}
+
+# Fake treehouse that logs each call with the copy's HEAD at that moment.
+add_treehouse_logging_head() {  # <case-dir> <worktree>
+  local case_dir=$1 wt=$2
+  : > "$case_dir/treehouse.log"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s head=%s\n' "\$*" "\$(git -C '$wt' rev-parse HEAD)" >> "$case_dir/treehouse.log"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
+# Commit feature.txt in a pool-slot copy and squash-merge it on origin/main.
+# Echoes the task commit.
+commit_squash_merged_slot_work() {  # <case-dir> <worktree>
+  local case_dir=$1 wt=$2 head
+  printf '%s\n' hello > "$wt/feature.txt"
+  git -C "$wt" add -- feature.txt
+  git -C "$wt" -c user.email=t@t -c user.name=t commit -q -m "add feature"
+  head=$(git -C "$wt" rev-parse HEAD)
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' "pr_head=$head" \
+    >> "$case_dir/state/task-x1.meta"
+  add_gh_pr_merged_for_head "$case_dir" "$head"
+  land_on_origin_main "$case_dir" feature.txt hello
+  git -C "$case_dir/project" fetch -q origin
+  printf '%s\n' "$head"
+}
+
+test_disposable_leftover_index_is_reset_and_torn_down() {
+  local case_dir rc
+  case_dir=$(make_case disposable-index)
+  write_meta "$case_dir" no-mistakes ship
+  setup_disposable_index_leftover "$case_dir" >/dev/null
+  [ -n "$(git -C "$case_dir/wt" status --porcelain)" ] \
+    || fail "disposable-index: fixture left no staged leftovers"
+  add_treehouse_logging_head "$case_dir" "$case_dir/wt"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "disposable-index: teardown should proceed without --force"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "disposable-index: teardown refused: $(cat "$case_dir/stderr")"
+  assert_grep "reset a leftover index" "$case_dir/stderr" "disposable-index: reset was not reported"
+  assert_grep "return --force" "$case_dir/treehouse.log" "disposable-index: the copy was not returned"
+  [ -z "$(git -C "$case_dir/wt" status --porcelain)" ] \
+    || fail "disposable-index: copy still dirty: $(git -C "$case_dir/wt" status --porcelain)"
+  assert_absent "$case_dir/state/task-x1.meta" "disposable-index: task record was not removed"
+  pass "a leftover index equal to a commit on origin/main is reset and the merged copy is torn down"
+}
+
+test_leftover_index_not_on_main_still_refuses() {
+  local case_dir rc head
+  case_dir=$(make_case leftover-not-on-main)
+  write_meta "$case_dir" no-mistakes ship
+  head=$(setup_disposable_index_leftover "$case_dir")
+  printf '%s\n' unlanded > "$case_dir/wt/extra.txt"
+  git -C "$case_dir/wt" add -- extra.txt
+  add_treehouse_logging_head "$case_dir" "$case_dir/wt"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "leftover-not-on-main: teardown should refuse"
+  assert_grep "uncommitted changes" "$case_dir/stderr" "leftover-not-on-main: refusal did not cite uncommitted changes"
+  git -C "$case_dir/wt" diff --cached --name-only > "$case_dir/staged"
+  assert_grep "extra.txt" "$case_dir/staged" "leftover-not-on-main: the staged change was discarded"
+  [ ! -s "$case_dir/treehouse.log" ] || fail "leftover-not-on-main: refusal returned the copy"
+  assert_refusal_retained_task_state "$case_dir" leftover-not-on-main "$head"
+  pass "a staged index that matches no commit on origin/main keeps the refusal"
+}
+
+test_leftover_index_with_unstaged_edit_still_refuses() {
+  local case_dir rc head
+  case_dir=$(make_case leftover-unstaged)
+  write_meta "$case_dir" no-mistakes ship
+  head=$(setup_disposable_index_leftover "$case_dir")
+  printf '%s\n' "edited after" > "$case_dir/wt/later.txt"
+  add_treehouse_logging_head "$case_dir" "$case_dir/wt"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "leftover-unstaged: teardown should refuse"
+  assert_grep "uncommitted changes" "$case_dir/stderr" "leftover-unstaged: refusal did not cite uncommitted changes"
+  assert_grep "edited after" "$case_dir/wt/later.txt" "leftover-unstaged: the unstaged edit was discarded"
+  [ ! -s "$case_dir/treehouse.log" ] || fail "leftover-unstaged: refusal returned the copy"
+  assert_refusal_retained_task_state "$case_dir" leftover-unstaged "$head"
+  pass "a matching staged index plus an unstaged edit keeps the refusal"
+}
+
+test_merged_pool_slot_is_bundled_and_moved_to_main_before_return() {
+  local case_dir wt rc head main bundle
+  case_dir=$(make_case recycle-merged-slot)
+  wt=$(move_case_to_pool_slot "$case_dir" 6)
+  write_meta "$case_dir" no-mistakes ship "$wt"
+  head=$(commit_squash_merged_slot_work "$case_dir" "$wt")
+  main=$(git -C "$case_dir/project" rev-parse origin/main)
+  add_treehouse_logging_head "$case_dir" "$wt"
+
+  set +e
+  FM_HOME="$case_dir" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "recycle-merged-slot: teardown should succeed"
+  bundle="$case_dir/data/slot-backups/task-x1-slot-6.bundle"
+  assert_present "$bundle" "recycle-merged-slot: no slot backup bundle"
+  git -C "$case_dir/project" bundle verify -q "$bundle" >/dev/null 2>&1 \
+    || fail "recycle-merged-slot: bundle does not verify"
+  git -C "$case_dir/project" bundle list-heads "$bundle" > "$case_dir/heads"
+  assert_grep "$head HEAD" "$case_dir/heads" "recycle-merged-slot: bundle lacks the task commit"
+  assert_grep "$head refs/heads/fm/task-x1" "$case_dir/heads" "recycle-merged-slot: bundle lacks the task branch"
+  assert_grep "return --force $wt head=$main" "$case_dir/treehouse.log" \
+    "recycle-merged-slot: slot was not on origin/main at return: $(cat "$case_dir/treehouse.log")"
+  pass "a merged pool slot is backed up to a verified bundle and moved to origin/main before return"
+}
+
+test_slot_bundle_failure_returns_slot_unchanged() {
+  local case_dir wt rc head
+  case_dir=$(make_case recycle-bundle-fails)
+  wt=$(move_case_to_pool_slot "$case_dir" 5)
+  write_meta "$case_dir" no-mistakes ship "$wt"
+  head=$(commit_squash_merged_slot_work "$case_dir" "$wt")
+  # A plain file where the backup directory belongs makes the bundle fail.
+  : > "$case_dir/data/slot-backups"
+  add_treehouse_logging_head "$case_dir" "$wt"
+
+  set +e
+  FM_HOME="$case_dir" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "recycle-bundle-fails: teardown should still succeed"
+  assert_grep "could not back up" "$case_dir/stderr" "recycle-bundle-fails: failure was not reported"
+  assert_grep "return --force $wt head=$head" "$case_dir/treehouse.log" \
+    "recycle-bundle-fails: slot left its task commit: $(cat "$case_dir/treehouse.log")"
+  pass "a failed slot backup returns the slot at its task commit and warns"
+}
+
+test_unmerged_pool_slot_is_not_moved() {
+  local case_dir wt rc head
+  case_dir=$(make_case recycle-no-merge-proof)
+  wt=$(move_case_to_pool_slot "$case_dir" 4)
+  write_meta "$case_dir" no-mistakes ship "$wt"
+  git -C "$wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "pushed work"
+  git -C "$wt" push -q origin HEAD:refs/heads/fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  head=$(git -C "$wt" rev-parse HEAD)
+  add_treehouse_logging_head "$case_dir" "$wt"
+
+  set +e
+  FM_HOME="$case_dir" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "recycle-no-merge-proof: pushed work should tear down"
+  assert_absent "$case_dir/data/slot-backups" "recycle-no-merge-proof: a bundle was written without a merged PR"
+  assert_grep "return --force $wt head=$head" "$case_dir/treehouse.log" \
+    "recycle-no-merge-proof: slot moved without a merged PR"
+  pass "a pool slot with no merged-PR proof is returned at its task commit"
+}
+
 test_dirty_return_warns_which_slot_was_lost() {
   local case_dir wt rc
   case_dir=$(make_case dirty-return)
@@ -6664,6 +6849,12 @@ test_tracked_edit_refusal_diagnostic
 test_mixed_refusal_diagnostic
 test_scout_nested_clone_returns_with_no_untracked_entries
 test_ship_nested_clone_is_refused_and_bytes_stay
+test_disposable_leftover_index_is_reset_and_torn_down
+test_leftover_index_not_on_main_still_refuses
+test_leftover_index_with_unstaged_edit_still_refuses
+test_merged_pool_slot_is_bundled_and_moved_to_main_before_return
+test_slot_bundle_failure_returns_slot_unchanged
+test_unmerged_pool_slot_is_not_moved
 test_dirty_return_warns_which_slot_was_lost
 test_dirty_return_warns_even_when_a_later_step_refuses
 test_forced_secondmate_child_scout_nested_clone_returns_clean

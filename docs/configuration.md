@@ -99,7 +99,7 @@ Each effective `FM_HOME` contains private operational directories.
 
 - Project and secondmate registries.
 - Captain preferences and optional shared captain preferences.
-- Learnings, backlog, briefs, scout reports, optional task status archives, and the optional per-task no-mistakes pipeline-spend ledger.
+- Learnings, backlog, briefs, scout reports, optional task status archives, the optional per-task no-mistakes pipeline-spend ledger, and the merged-slot commit backups under `data/slot-backups/`.
 - Explicitly installed content-addressed extension packages under `data/extensions/packages/`.
 
 `state/` holds runtime records:
@@ -872,6 +872,15 @@ The report never changes a pool or slot; pruning or other pool cleanup remains a
 With the file absent, bootstrap reads no Treehouse state and prints no pool report.
 Only the file's presence is read, at each bootstrap run.
 The flag is a home-local preference and is not inherited by secondmate homes.
+
+## Slot idle reserve (config/slot-idle-reserve)
+
+The optional local, gitignored `config/slot-idle-reserve` file opts this home into capping idle Treehouse slots per clone, so a clone does not hoard clean slots that other clones sharing the pool cannot reuse.
+Its first line is the number of idle reusable slots to keep in each clone under this home's `projects/`; an empty first line means 2.
+On each watcher heartbeat, `bin/fm-slot-pool.sh reserve` removes the surplus with a plain `treehouse destroy <path> --yes`, which Treehouse limits to its own disposable class (merged, clean, idle, unleased), and never touches a slot a task record or owner claim names, another clone's slots, or another home's.
+A value that is not a non-negative integer is reported and removes nothing, and with the file absent nothing is removed.
+The census of every pool slot by condition is not gated by this file; it appears in the fleet view and bearings, which warn when reusable free slots plus unused room fall below `FM_SLOT_LOW_ROOM` (default 4).
+The file is a home-local preference and is not inherited by secondmate homes; `bin/fm-slot-pool.sh` owns the exact rules.
 
 ## Squash commit summary (config/pr-squash-summary)
 

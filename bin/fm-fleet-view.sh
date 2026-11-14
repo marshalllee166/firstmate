@@ -91,6 +91,18 @@ printf '%s\n' "$SNAPSHOT" | jq -r '
     (.backlog.records[] | select(.state == "done") | backlog_row(.))
    end),
   "",
+  "## Slot Pool",
+  (if (.slot_pool.unavailable // false) then
+    "Slot pool census unavailable."
+   elif ((.slot_pool.clones // []) | length) == 0 then
+    "No Treehouse pool under this home."
+   else
+    (.slot_pool.warnings[]? | "WARNING: \(.)"),
+    "| Clone | Working | Waiting | Finished, not cleaned up | Stuck | Reusable free | Headroom | Max trees |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    (.slot_pool.clones[] | "| \(.project) | \(.working) | \(.waiting) | \(.finished) | \(.stuck) | \(.reusable_free) | \(.headroom // "unknown") | \(.max_trees // "unknown") |")
+   end),
+  "",
   "## Secondmates",
   .secondmate_guidance.note
 '

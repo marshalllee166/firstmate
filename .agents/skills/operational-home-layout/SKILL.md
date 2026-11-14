@@ -59,6 +59,7 @@ config/pr-health-monitor  optional presence flag opting this home into the defau
 config/park-on-review config/auto-land  optional presence flags: the first opts this home into default-off parking of idle ship lanes whose PR only awaits human review, the second opts this home into merge-time cleanup of unparked ship lanes; LOCAL, gitignored, and not inherited; see docs/configuration.md "Park on review"
 config/hold-pr-settle  optional presence flag opting this home into default-off settlement of captain holds that declare a PR policy; LOCAL, gitignored, and not inherited; see docs/configuration.md "PR hold settlement"
 config/contribution-review-bots  optional exact GitHub-login allowlist for review-bot signals on owned pull requests; LOCAL, gitignored, and not inherited; see docs/configuration.md "Contribution review bots"
+config/slot-idle-reserve  optional number of idle reusable Treehouse slots each clone keeps (empty means 2), with the surplus removed on heartbeat by a plain treehouse destroy; LOCAL, gitignored, and not inherited; see docs/configuration.md "Slot idle reserve"
 config/pipeline-spend  optional presence flag opting this home in to default-off per-task no-mistakes spend recording in data/pipeline-spend.jsonl; LOCAL, gitignored, and not inherited; see docs/configuration.md "No-mistakes pipeline spend"
 config/nm-home-resolver  optional one-line absolute path of a site-provided executable that maps a task copy to its no-mistakes home for host-side reads when NM_HOME is unset; LOCAL, gitignored, and not inherited; see docs/configuration.md "No-mistakes home resolver"
 config/ready-after-green  optional presence flag opting this home into default-off withholding of a secondmate's PR-ready parent line until the child reports checks green; LOCAL, gitignored, and not inherited; see docs/configuration.md "PR-ready line after green"
@@ -88,6 +89,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
   <id>/status.log <id>/status.<N>.log <id>/children/<child>/...  optional teardown archives; see docs/architecture.md "Task status archives"
+  slot-backups/<id>-slot-<n>.bundle  verified git bundle of a merged task's slot commits, written by bin/fm-teardown.sh before it moves that pool slot to the base branch; bin/fm-teardown.sh owns when
   pipeline-spend.jsonl  optional per-task no-mistakes pipeline spend, written only when config/pipeline-spend is present; bin/fm-pipeline-spend.sh owns the schema
 projects/            cloned repos; gitignored; read-only except under hard rule 1's concrete captain-approved project operation exception
 state/               runtime records and signals; gitignored

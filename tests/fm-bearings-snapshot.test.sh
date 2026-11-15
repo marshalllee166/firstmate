@@ -3452,7 +3452,40 @@ test_supplied_secondmate_questions_and_legacy_optional_fields() {
   pass "supplied secondmate questions preserve text with missing optional fields"
 }
 
+test_slot_pool_low_room_warning_reaches_bearings() {
+  local home fakebin clone pool out
+  home=$(make_home slot-pool-low)
+  fakebin=$(make_fakebin "$home")
+  clone="$home/projects/app"
+  pool="$home/pool"
+  git init -q --bare "$home/origin.git"
+  git -C "$home/origin.git" symbolic-ref HEAD refs/heads/main
+  git clone -q "$home/origin.git" "$clone" 2>/dev/null
+  git -C "$clone" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+  git -C "$clone" push -q origin HEAD:main
+  git -C "$clone" fetch -q origin
+  git -C "$clone" remote set-head origin main
+  printf 'max_trees = 1\n' > "$clone/treehouse.toml"
+  mkdir -p "$pool/1"
+  git -C "$clone" worktree add -q --detach "$pool/1/app" origin/main
+  pool=$(cd "$pool" && pwd -P)
+  printf '[{"name":"1","path":"%s/1/app","status":"available","processes":[],"lease_id":""}]\n' "$pool" \
+    > "$home/th-status.json"
+  # shellcheck disable=SC2016  # Literal script text for the fake.
+  printf '#!/usr/bin/env bash\n[ "${1:-}" = status ] && cat %q\n' "$home/th-status.json" > "$fakebin/treehouse"
+  chmod +x "$fakebin/treehouse"
+  out=$(run "$home" "$fakebin" --json)
+  printf '%s' "$out" | jq -e '.slot_pool_warnings | length == 1 and (.[0] | contains("1 reusable free + 0 unused room"))' >/dev/null \
+    || fail "bearings should carry the slot pool low-room warning: $(printf '%s' "$out" | jq -c '.slot_pool_warnings')"
+  rm -f "$fakebin/treehouse"
+  out=$(run "$home" "$fakebin" --json)
+  printf '%s' "$out" | jq -e 'has("slot_pool_warnings") | not' >/dev/null \
+    || fail "bearings should omit slot_pool_warnings when no pool is short"
+  pass "bearings carries the slot pool low-room warning only when a pool is nearly full"
+}
+
 fm_test_run \
+  test_slot_pool_low_room_warning_reaches_bearings \
   test_full_captain_questions_survive_local_and_secondmate_projection \
   test_supplied_secondmate_questions_and_legacy_optional_fields \
   test_task_teardown_during_metadata_capture_does_not_abort_snapshot \

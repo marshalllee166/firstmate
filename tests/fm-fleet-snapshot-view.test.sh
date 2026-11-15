@@ -789,6 +789,54 @@ EOF
   pass "undated captain holds age after a configurable threshold, decided only from structured fields"
 }
 
+# A home whose projects/app clone owns a two-slot pool in a max_trees=3 pool:
+# slot 1 is idle on origin/main, slot 2 is held by a task that is not working.
+write_slot_pool_fixture() {  # <home>
+  local home=$1 clone pool
+  clone="$home/projects/app"
+  pool="$home/pool"
+  git init -q --bare "$home/origin.git"
+  git -C "$home/origin.git" symbolic-ref HEAD refs/heads/main
+  git clone -q "$home/origin.git" "$clone" 2>/dev/null
+  git -C "$clone" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+  git -C "$clone" push -q origin HEAD:main
+  git -C "$clone" fetch -q origin
+  git -C "$clone" remote set-head origin main
+  printf 'max_trees = 3\n' > "$clone/treehouse.toml"
+  mkdir -p "$pool/1" "$pool/2"
+  : > "$pool/treehouse-state.json"
+  git -C "$clone" worktree add -q --detach "$pool/1/app" origin/main
+  git -C "$clone" worktree add -q -b fm/held "$pool/2/app" origin/main
+  pool=$(cd "$pool" && pwd -P)
+  fm_write_meta "$home/state/held-task.meta" "kind=ship" "mode=no-mistakes" \
+    "window=fm:held-task" "worktree=$pool/2/app"
+  printf 'needs-decision [at=1]: pick an option\n' > "$home/state/held-task.status"
+  cat > "$home/fakebin-th" <<JSON
+[{"name":"1","path":"$pool/1/app","status":"available","processes":[],"lease_id":""},
+ {"name":"2","path":"$pool/2/app","status":"in-use","processes":[{"pid":1,"name":"zsh"}],"lease_id":""}]
+JSON
+}
+
+test_slot_pool_census_and_low_room_warning() {
+  local home fakebin out view
+  home=$(make_home slot-pool)
+  write_slot_pool_fixture "$home"
+  fakebin=$(make_fakebin "$home")
+  # shellcheck disable=SC2016  # Literal script text for the fake.
+  printf '#!/usr/bin/env bash\n[ "${1:-}" = status ] && cat %q\n' "$home/fakebin-th" > "$fakebin/treehouse"
+  chmod +x "$fakebin/treehouse"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '.slot_pool.clones[0]
+    | .working == 0 and .waiting == 1 and .finished == 0 and .stuck == 0
+      and .reusable_free == 1 and .headroom == 1 and .low_room == true' >/dev/null \
+    || fail "snapshot slot_pool counts wrong: $(printf '%s' "$out" | jq -c '.slot_pool | .clones[0] |= del(.slots)')"
+  view=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$VIEW")
+  assert_contains "$view" "WARNING: Slot pool for app is nearly full: 1 reusable free + 1 unused room (under 4)" \
+    "view should warn when the pool is nearly full"
+  assert_contains "$view" "| 0 | 1 | 0 | 0 | 1 | 1 | 3 |" "view should render the slot pool counts"
+  pass "fleet snapshot and view report the slot pool census and its low-room warning"
+}
+
 test_view_renders_snapshot() {
   local home fakebin view
   home=$(make_home view)
@@ -1170,4 +1218,5 @@ fm_test_run \
   test_scout_reports_include_teardown_reports \
   test_backlog_tasks_axi_forms_and_overrides \
   test_view_renders_snapshot \
+  test_slot_pool_census_and_low_room_warning \
   test_view_renders_dead_secondmate_agent_status

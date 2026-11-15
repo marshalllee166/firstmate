@@ -79,6 +79,24 @@
 # Dirty refusals distinguish untracked-only leftovers from tracked edits and list
 # at most ten non-exempt untracked paths. tests/fm-teardown.test.sh covers hidden
 # untracked work and the clean return control.
+# One leftover is not uncommitted work: a return interrupted mid-reset (for
+# example by a delete-protected path) can leave the index and tree at a commit
+# already on the base branch while HEAD stays on the task commit. When every
+# dirty entry is staged-only and the staged tree equals the tree of a commit
+# reachable from origin/<base> (base_branch=, else the default branch), the
+# leftover is disposable: the first safety pass only proves that, and the pass
+# after task processes are reaped switches index and tree back to HEAD with a
+# non-forced two-tree `git read-tree -m -u`, then runs the ordinary checks on
+# HEAD. Anything else, or a read-tree that refuses, keeps the dirty refusal.
+# Squash-merge slot recycling: a slot returned at a squash-merged task commit
+# reads as unmerged, so Treehouse never reuses it and its safe destroy refuses
+# it. For a clean non-forced ship copy in a pool slot whose HEAD is not on
+# origin/<base>, once a merged PR is proved (the landed check's own proof, or
+# the same pr_is_merged read when reachability already passed), teardown writes
+# data/slot-backups/<task-id>-slot-<n>.bundle holding HEAD and the task branch
+# minus origin/<base>, verifies it with `git bundle verify`, and only then
+# detaches the slot to origin/<base> before the return. A failed bundle,
+# verification, or checkout leaves the slot at its task commit and warns.
 # local-only projects additionally accept work merged into the local default
 # branch (firstmate performs that merge after configured approval) as a fallback
 # for the common case where there is no remote at all.
@@ -1747,6 +1765,7 @@ gitlab_mr_landing_opted_in() {
   [ -e "$CONFIG/park-on-review" ] || [ -e "$CONFIG/auto-land" ]
 }
 
+TEARDOWN_PR_MERGE_PROVED=0
 pr_is_merged() {
   local branch=$1 target view state remainder head resolved_url current landed=0
   if [ -n "$PR_URL" ]; then
@@ -1793,6 +1812,7 @@ pr_is_merged() {
     [ -n "$resolved_url" ] || return 1
     PR_URL=$resolved_url
   fi
+  TEARDOWN_PR_MERGE_PROVED=1
   return 0
 }
 
@@ -2164,6 +2184,38 @@ teardown_note_dirty_return() {
   printf '%s\n' "$residue" | sed 's/^/  /' >&2
 }
 
+# Squash-merge slot recycling (see the script header). Runs only for a clean,
+# non-forced ship copy that is a pool slot. Any failure leaves the slot at its
+# task commit, exactly as a return without recycling would, and says so.
+teardown_recycle_merged_slot() {  # <branch>
+  local branch=$1 name ref slot_dir slot_label dir bundle
+  local -a refs=(HEAD)
+  name=${BASE_BRANCH:-}
+  [ -n "$name" ] || name=$(default_branch) || return 0
+  ref="refs/remotes/origin/$name"
+  git -C "$WT" rev-parse --quiet --verify "$ref^{commit}" >/dev/null 2>&1 || return 0
+  # Already on the base branch: the pool sees it as merged.
+  ! git -C "$WT" merge-base --is-ancestor HEAD "$ref" 2>/dev/null || return 0
+  [ "$TEARDOWN_PR_MERGE_PROVED" = 1 ] || pr_is_merged "$branch" || return 0
+  [ "$branch" = HEAD ] || refs+=("$branch")
+  slot_dir=$(canonical_existing_dir "$WT") || return 0
+  slot_label=$(basename "$(dirname "$slot_dir")")
+  dir="$DATA/slot-backups"
+  bundle="$dir/$ID-slot-$slot_label.bundle"
+  if ! { mkdir -p "$dir" \
+         && git -C "$WT" bundle create -q "$bundle" "${refs[@]}" --not "$ref" >/dev/null 2>&1 \
+         && git -C "$WT" bundle verify -q "$bundle" >/dev/null 2>&1; }; then
+    rm -f "$bundle" 2>/dev/null || true
+    echo "warning: could not back up $ID's merged commits from pool slot $slot_label to a verified bundle; returning the slot at its task commit, so the pool may not reuse it" >&2
+    return 0
+  fi
+  if ! git -C "$WT" checkout -q --detach "$ref" >/dev/null 2>&1; then
+    echo "warning: backed up $ID's merged commits to $bundle but could not move pool slot $slot_label to ${ref#refs/remotes/}; returning it at its task commit, so the pool may not reuse it" >&2
+    return 0
+  fi
+  echo "teardown: PR merged; backed up pool slot $slot_label's commits to $bundle and moved the slot to ${ref#refs/remotes/} so the pool can reuse it" >&2
+}
+
 # A worker may have pushed from another checkout, so tracking refs that do not
 # show the work prove nothing until they are refreshed. Runs at most once per
 # teardown, through bin/fm-dod-lib.sh's fm_dod_refresh_remote_refs, which owns
@@ -2199,6 +2251,57 @@ read_worktree_dirt() {
   dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' || true)
 }
 
+# Disposable leftover index (see the script header): true when every dirty
+# entry is staged-only and the staged tree equals the tree of a commit on
+# origin's base branch, so the leftovers hold nothing that is not already on the
+# remote. Sets DISPOSABLE_INDEX_TREE and DISPOSABLE_INDEX_REF.
+DISPOSABLE_INDEX_TREE=
+DISPOSABLE_INDEX_REF=
+index_leftover_is_disposable() {
+  local name ref staged_tree matches
+  DISPOSABLE_INDEX_TREE=
+  DISPOSABLE_INDEX_REF=
+  [ -n "$dirty" ] || return 1
+  # Porcelain XY: X is the index side, Y the working tree; staged-only is Y=' '.
+  ! printf '%s\n' "$dirty" | grep -qvE '^[MADRCT] ' || return 1
+  name=${BASE_BRANCH:-}
+  [ -n "$name" ] || name=$(default_branch) || return 1
+  ref="refs/remotes/origin/$name"
+  git -C "$WT" rev-parse --quiet --verify "$ref^{commit}" >/dev/null 2>&1 || return 1
+  staged_tree=$(git -C "$WT" write-tree 2>/dev/null) || return 1
+  matches=$(git -C "$WT" log --format=%T "$ref" -- 2>/dev/null | grep -Fxc -- "$staged_tree" || true)
+  [ "${matches:-0}" -gt 0 ] || return 1
+  DISPOSABLE_INDEX_TREE=$staged_tree
+  DISPOSABLE_INDEX_REF=$ref
+}
+
+# Before the task's processes are reaped this only proves the leftovers
+# disposable; afterwards it switches index and tree back to HEAD with a
+# non-forced two-tree read-tree, which itself refuses any file that changed
+# since the proof. Clears the caller's $dirty on success.
+TEARDOWN_PROCESSES_REAPED=0
+clear_disposable_index() {
+  index_leftover_is_disposable || return 1
+  if [ "$TEARDOWN_PROCESSES_REAPED" = 1 ]; then
+    git -C "$WT" read-tree -m -u "$DISPOSABLE_INDEX_TREE" HEAD >/dev/null 2>&1 || {
+      echo "teardown: could not reset the leftover index in $WT to HEAD; keeping the uncommitted-changes refusal" >&2
+      return 1
+    }
+    echo "teardown: reset a leftover index in $WT: its staged content equals a commit on ${DISPOSABLE_INDEX_REF#refs/remotes/}, so nothing unlanded was in it" >&2
+    read_worktree_dirt || return 1
+    [ -z "$dirty" ]
+    return
+  fi
+  dirty=
+}
+
+# The safety checks' dirty read: read_worktree_dirt, then the disposable
+# leftover-index exemption.
+read_task_dirt() {
+  read_worktree_dirt || return
+  [ -z "$dirty" ] || clear_disposable_index || true
+}
+
 validate_worktree_teardown_safety() {
   local dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch
   [ -d "$WT" ] || return 0
@@ -2207,7 +2310,7 @@ validate_worktree_teardown_safety() {
     secondmate|scout) return 0 ;;
   esac
 
-  read_worktree_dirt || return
+  read_task_dirt || return
 
   if ! unpushed_raw=$(git -C "$WT" log --oneline HEAD --not --exclude='no-mistakes/*' --remotes -- 2>/dev/null); then
     if worktree_safety_blocked_by_lock "commits not on a remote"; then
@@ -2222,7 +2325,7 @@ validate_worktree_teardown_safety() {
     refresh_remote_refs
     # The task's processes are still running, so edits may have arrived during
     # the wait; the refusals below act on this fresh read.
-    read_worktree_dirt || return
+    read_task_dirt || return
     if ! unpushed_raw=$(git -C "$WT" log --oneline HEAD --not --exclude='no-mistakes/*' --remotes -- 2>/dev/null); then
       if worktree_safety_blocked_by_lock "commits not on a remote"; then
         return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
@@ -3961,6 +4064,7 @@ if [ "$KIND" != secondmate ] && teardown_owns_worktree; then
 elif [ "$KIND" != secondmate ]; then
   reap_task_worktree_processes tasktmp "$TASK_TMP"
 fi
+TEARDOWN_PROCESSES_REAPED=1
 
 # A worker can write after the first proof, including while its run is concluded
 # or its processes exit. Inspect the stopped copy before dropping its branch or
@@ -4091,6 +4195,12 @@ elif [ "$KIND" != secondmate ] && ! teardown_owns_worktree; then
   :
 elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
+  wt_pool_slot=0
+  fm_treehouse_pool_slot "$PROJ" "$WT" && wt_pool_slot=1
+  if [ "$wt_pool_slot" = 1 ] && [ "$KIND" = ship ] && [ "$MODE" != local-only ] \
+     && [ "$FORCE" != "--force" ]; then
+    teardown_recycle_merged_slot "$branch"
+  fi
   if [ "$branch" != "HEAD" ]; then
     if git -C "$WT" checkout --detach -q 2>/dev/null; then
       git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
@@ -4117,8 +4227,6 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   if [ "$KIND" = scout ] || [ "$FORCE" = "--force" ]; then
     teardown_scrub_scratch_copy "$WT" || exit 1
   fi
-  wt_pool_slot=0
-  fm_treehouse_pool_slot "$PROJ" "$WT" && wt_pool_slot=1
   teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1

@@ -14,6 +14,9 @@
 # A second decision is owned here too: fm_session_lock_pid_blocks_reclaim
 # answers whether a recorded owner may be reclaimed, so recovery callers
 # delegate that question instead of re-deriving liveness from the fields.
+# It also owns the Claude session helm record that lets a Claude hook started
+# without FM_HOME follow the home its session took the helm of (see "Claude
+# session helm record" below).
 # This file is sourced by scripts and has no side effects on source.
 
 # Cursor process identity is NOT expressible as a command-name pattern and is
@@ -841,6 +844,113 @@ fm_session_lock_same_session() {  # <state> [<ancestry-pids>]
   trusted=$(fm_session_lock_trusted_session_id "${2:-}") || return 1
   recorded=$(fm_session_lock_recorded_session_id "$state") || return 1
   [ "$recorded" = "$trusted" ]
+}
+
+# --- Claude session helm record ------------------------------------------------
+# A Claude hook sees only the harness's environment. A primary started or
+# resumed without FM_HOME (a plain `claude --resume` from the code root) runs
+# every hook against the code root as its home while the model works the home
+# it took the helm of with an explicit FM_HOME: the hooks then reclaim the code
+# root's stale lock and present its wakes to a model that can never acknowledge
+# them, and leave the real home unsupervised. So bin/fm-lock.sh records which
+# home each trusted Claude session last took the helm of, in the one place such
+# a hook looks - the fallback home's own state dir - and the hooks that act on
+# supervision follow that record.
+#
+# Record: <fallback-root>/state/.claude-session-helm/<session-id>, one line, the
+# helm home's physical path. Present only while that session's latest helm is
+# a home other than the fallback whose state dir is <home>/state, and pruned
+# once that home's sidecar names another session. Never creates the fallback
+# state dir.
+
+_fm_claude_helm_id_safe() {  # <session-id>
+  case "$1" in
+    ''|.*|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+}
+
+# Print the helm home record file $2 names, or return 1 unless it is an
+# absolute path to a home whose state dir exists and is not fallback root $1's.
+_fm_claude_helm_record_home() {  # <fallback-root> <record>
+  local home state fallback_state
+  [ -f "$2" ] && [ ! -L "$2" ] || return 1
+  home=$(head -n 1 "$2" 2>/dev/null) || return 1
+  case "$home" in /*) ;; *) return 1 ;; esac
+  state=$(cd -P "$home/state" 2>/dev/null && pwd) || return 1
+  fallback_state=$(cd -P "$1/state" 2>/dev/null && pwd) || fallback_state=
+  [ "$state" != "$fallback_state" ] || return 1
+  printf '%s\n' "$home"
+}
+
+# bin/fm-lock.sh calls this after it acquires or confirms <state>'s lock for
+# <home>. Without a trusted Claude session id it records nothing. Best effort:
+# a failure leaves the hooks on their fallback, as before the record existed.
+fm_claude_session_helm_record() {  # <fallback-root> <home> <state>
+  local fallback=$1 home=$2 state=$3 id dir state_phys fallback_state home_state tmp record recorded_home recorded_id
+  id=$(fm_session_lock_trusted_session_id) || return 0
+  _fm_claude_helm_id_safe "$id" || return 0
+  [ -d "$fallback/state" ] || return 0
+  dir="$fallback/state/.claude-session-helm"
+  state_phys=$(cd -P "$state" 2>/dev/null && pwd) || return 1
+  fallback_state=$(cd -P "$fallback/state" 2>/dev/null && pwd) || return 1
+  home_state=$(cd -P "$home/state" 2>/dev/null && pwd) || home_state=
+  if [ "$state_phys" != "$fallback_state" ] && [ "$state_phys" = "$home_state" ]; then
+    home=$(cd -P "$home" && pwd) || return 1
+    case "$home" in *$'\n'*) return 1 ;; esac
+    [ -d "$dir" ] || mkdir -m 700 "$dir" 2>/dev/null || [ -d "$dir" ] || return 1
+    tmp=$(mktemp "$dir/.record.XXXXXX") || return 1
+    if ! { printf '%s\n' "$home" > "$tmp" && mv -f "$tmp" "$dir/$id"; } 2>/dev/null; then
+      rm -f "$tmp" 2>/dev/null
+      return 1
+    fi
+  else
+    rm -f "$dir/$id" 2>/dev/null || return 1
+  fi
+  [ -d "$dir" ] || return 0
+  for record in "$dir"/*; do
+    [ -f "$record" ] || continue
+    recorded_id=${record##*/}
+    [ "$recorded_id" != "$id" ] || continue
+    if recorded_home=$(_fm_claude_helm_record_home "$fallback" "$record") \
+      && [ "$(fm_session_lock_recorded_session_id "$recorded_home/state" 2>/dev/null)" = "$recorded_id" ]; then
+      continue
+    fi
+    rm -f "$record" 2>/dev/null || true
+  done
+}
+
+# Export FM_HOME as this trusted Claude session's helm home when a hook would
+# otherwise fall back to <fallback-root> (FM_HOME and FM_STATE_OVERRIDE both
+# unset). The session's own record wins while that home's sidecar still names
+# it; after a /clear re-key the new id has no record yet, so a record whose
+# home's lock this same harness process holds is followed instead, the newest
+# when several qualify. Returns 1 and changes nothing otherwise.
+fm_claude_session_helm_home() {  # <fallback-root>
+  local fallback=$1 id=${CLAUDE_CODE_SESSION_ID:-} dir pids trusted home='' candidate record newest='' lock_pid
+  [ -z "${FM_HOME:-}" ] && [ -z "${FM_STATE_OVERRIDE:-}" ] || return 1
+  _fm_claude_helm_id_safe "$id" || return 1
+  dir="$fallback/state/.claude-session-helm"
+  [ -d "$dir" ] || return 1
+  pids=$(fm_harness_ancestry_pids) || return 1
+  trusted=$(fm_session_lock_trusted_session_id "$pids") || return 1
+  [ "$trusted" = "$id" ] || return 1
+  if candidate=$(_fm_claude_helm_record_home "$fallback" "$dir/$id") \
+    && [ "$(fm_session_lock_recorded_session_id "$candidate/state" 2>/dev/null)" = "$id" ]; then
+    home=$candidate
+  else
+    for record in "$dir"/*; do
+      candidate=$(_fm_claude_helm_record_home "$fallback" "$record") || continue
+      lock_pid=$(head -n 1 "$candidate/state/.lock" 2>/dev/null) || continue
+      fm_harness_pid_listed "$lock_pid" "$pids" || continue
+      if [ -z "$newest" ] || [ "$record" -nt "$newest" ]; then
+        home=$candidate
+        newest=$record
+      fi
+    done
+  fi
+  [ -n "$home" ] || return 1
+  FM_HOME=$home
+  export FM_HOME
 }
 
 # Print the pid bin/fm-lock.sh records on lock line 1 for this session. For a

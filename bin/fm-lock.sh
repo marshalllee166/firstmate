@@ -43,6 +43,10 @@
 # the sidecar, as for a line 1 in the ancestry, and a later acquisition
 # re-anchors.
 #
+# Every successful acquisition or confirmation then updates the Claude session
+# helm record (fm_claude_session_helm_record in bin/fm-session-lock-lib.sh owns
+# it); a failure there is a warning and never fails the acquisition.
+#
 # Usage: fm-lock.sh           acquire; exit 1 unless ownership is verified
 #        fm-lock.sh status    print holder and liveness; always exits 0.
 #                             A held lock is not proof the holder is consuming
@@ -199,6 +203,11 @@ publish_lock_session() {
   return 0
 }
 
+record_claude_helm() {
+  fm_claude_session_helm_record "$FM_ROOT" "$FM_HOME" "$STATE" \
+    || echo "warning: could not record this session's helm home under $FM_ROOT/state; Claude hooks started without FM_HOME may supervise the code root's home instead" >&2
+}
+
 publish_lock_session_or_die() {
   publish_lock_session && return 0
   echo "error: cannot record the session identity beside the lock; operate read-only until resolved" >&2
@@ -236,6 +245,7 @@ confirm_own_lock() {  # <recorded-pid>
     publish_lock_session_or_die
     commit_lock_session
     release_claim_lock
+    record_claude_helm
     echo "lock acquired: harness pid $recorded"
     exit 0
   fi
@@ -358,4 +368,5 @@ fi
 commit_lock_session
 release_lease_lock
 release_claim_lock
+record_claude_helm
 echo "lock acquired: harness pid $me"

@@ -687,6 +687,121 @@ test_unrecorded_successor_is_stopped_rather_than_left_for_main() {
   pass "host+hook: a successor that cannot be recorded is stopped, and main's next turn end arms a fresh cycle"
 }
 
+
+# One Claude main session whose harness environment carries no FM_HOME, as a
+# plain `claude --resume` from the code root: its hooks fall back to the code
+# root unless a recorded helm says otherwise. The model takes the helm of
+# <home> with an explicit FM_HOME, then each turn_end fires the real Stop hook
+# in a process group of its own, as Claude runs it. Control files live in
+# <home>.
+HOMELESS_SESSION_ID=sess-launched-without-home
+start_homeless_session() {  # <code-root> <home>
+  env -u FM_HOME -u FM_STATE_OVERRIDE FM_ROOT_OVERRIDE="$1" HELM="$2" \
+    FM_CREW_STATE_BIN="$2/fakebin/fm-crew-state.sh" PATH="$2/fakebin:$PATH" \
+    CLAUDE_CODE_SESSION_ID="$HOMELESS_SESSION_ID" "$FAKE_CLAUDE" -c '
+      export CLAUDE_PID=$$
+      printf "%s\n" "$$" >> "$HELM/claude-pids"
+      FM_HOME="$HELM" "$FM_ROOT_OVERRIDE/bin/fm-lock.sh" > "$HELM/lock.out" 2>&1
+      while [ ! -e "$HELM/session.stop" ] && kill -0 "$FM_TEST_SUITE_PID" 2>/dev/null; do
+        if [ -e "$HELM/stop.go" ]; then
+          rm -f "$HELM/stop.go"
+          printf "{\"session_id\":\"%s\",\"stop_hook_active\":false}\n" "$CLAUDE_CODE_SESSION_ID" > "$HELM/hook.stdin"
+          set -m
+          "$FM_ROOT_OVERRIDE/bin/fm-claude-stop-autoarm.sh" < "$HELM/hook.stdin" > "$HELM/hook.out" 2> "$HELM/hook.err" &
+          printf "%s\n" "$!" > "$HELM/hook.pgid"
+          wait "$!"
+          printf "%s\n" "$?" > "$HELM/hook.rc"
+          set +m
+        fi
+        sleep 0.1
+      done
+    ' 2>> "$2/claude.err" &
+}
+
+# host_owns_the_only_cycle for a home whose arms run from the code root's bin.
+helm_owns_the_only_cycle() {  # <code-root> <home>
+  local host watcher arms
+  host=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$2/state/.supervision-host" 2>/dev/null)
+  watcher=$(cat "$2/state/.watch.lock/pid" 2>/dev/null)
+  [ -n "$host" ] && [ -n "$watcher" ] && kill -0 "$watcher" 2>/dev/null || return 1
+  arms=$(home_arms "$1")
+  [ "$(printf '%s\n' "$arms" | grep -c .)" -eq 1 ] || return 1
+  [ "$arms" = "$(parent_of "$watcher") $host" ]
+}
+
+beacon_fresh() {  # <home>
+  local mtime
+  mtime=$(stat -c %Y "$1/state/.last-watcher-beat" 2>/dev/null || stat -f %m "$1/state/.last-watcher-beat" 2>/dev/null) || return 1
+  [ $(($(date +%s) - mtime)) -le 5 ]
+}
+
+# The live failure (2026-11-19): a primary resumed without FM_HOME. Its Stop
+# hooks fell back to the code root's own home - a former home with a dead
+# session lock and an unacknowledged row - reclaimed that lock, and every park's
+# take-over resurfaced the row, while the model drained the home it took the
+# helm of and could never acknowledge it: check: rearm-resurface every ~10s.
+# The hooks must follow the session's helm, give a restarted session at most
+# one acknowledgeable recovery, then park.
+test_session_launched_without_fm_home_supervises_its_helm_home() {
+  local root home dead pgid
+  root=$(make_primary_home homeless-code-root)
+  home=$(make_home homeless-home attended)
+  dead=$(dead_pid)
+  printf '%s\n' "$dead" > "$root/state/.lock"
+  printf '%s\n' "$HOMELESS_SESSION_ID" > "$root/state/.lock-session"
+  printf '%s\t1\tcheck\tinbox:old\tcheck: captain inbox note old\n' "$(date +%s)" > "$root/state/.wake-queue"
+  printf '1\n' > "$root/state/.wake-queue.seq"
+  printf 'announced:downtime:%s.1.old\n' "$dead" > "$root/state/.watcher-down"
+  chmod 600 "$root/state/.watcher-down"
+  printf '%s\n' "$dead" > "$home/state/.lock"
+  printf '%s\n' "$HOMELESS_SESSION_ID" > "$home/state/.lock-session"
+
+  start_homeless_session "$root" "$home"
+  wait_until 100 grep -qs '^lock acquired' "$home/lock.out" || fail "homeless: the model could not take the helm: $(cat "$home/lock.out" 2>/dev/null)"
+  turn_end "$home"
+  wait_until 150 watcher_live "$home" \
+    || fail "homeless: the Stop hook did not supervise the helm home: $(cat "$home/hook.err" 2>/dev/null)"$'\n'"$(cat "$root/state/.supervision-host.log" 2>/dev/null)"
+  sleep 3
+  ! hook_exited "$home" || fail "homeless: the first park rewoke main: $(cat "$home/hook.err")"
+  { watcher_live "$home" && beacon_fresh "$home"; } || fail "homeless: the first park is not a healthy cycle"
+  ! watcher_live "$root" || fail "homeless: a watcher runs in the code root's home"
+  [ "$(cat "$root/state/.lock")" = "$dead" ] || fail "homeless: the hook reclaimed the code root's stale session lock"
+  assert_absent "$root/state/.supervision-host.log" "homeless: the host ran in the code root's home"
+
+  # Restart: Claude tears the parked hook's group down with the session, and
+  # the same conversation resumes in a new process, still without FM_HOME.
+  pgid=$(cat "$home/hook.pgid")
+  : > "$home/session.stop"
+  kill -TERM -- "-$pgid" 2>/dev/null || true
+  wait_until 100 hook_exited "$home" || fail "homeless: the parked hook outlived its session"
+  wait_until 100 bash -c '! kill -0 "$1" 2>/dev/null' _ "$(cat "$home/state/.watch.lock/pid" 2>/dev/null || echo "$dead")" \
+    || fail "homeless: the first session's watcher outlived it"
+  rm -f "$home/session.stop" "$home/lock.out"
+  start_homeless_session "$root" "$home"
+  wait_until 100 grep -qs '^lock acquired' "$home/lock.out" || fail "homeless restart: the model could not take the helm: $(cat "$home/lock.out" 2>/dev/null)"
+  turn_end "$home"
+  wait_until_deadline 60 hook_exited "$home" || fail "homeless restart: the downtime was never presented"
+  assert_rewoke_main "$home" "homeless restart"
+  assert_grep 'check: rearm-resurface' "$home/hook.err" "homeless restart: the one presentation must be the recovery"
+  main_drain "$home" >/dev/null
+  [ -n "$MAIN_ACK" ] || fail "homeless restart: main's drain of its helm home offered no acknowledgement for the recovery"
+  # shellcheck disable=SC2086 # the printed acknowledgement arguments
+  FM_HOME="$home" "$FAKE_CLAUDE" -c '"$0" "$@" >/dev/null 2>&1' "$ROOT/bin/fm-wake-drain.sh" $MAIN_ACK \
+    || fail "homeless restart: main's acknowledgement failed: $MAIN_ACK"
+  assert_re '^acked:' "$home/state/.watcher-down" "homeless restart: the acknowledgement did not retire the recovery"
+  turn_end "$home"
+  wait_until 150 helm_owns_the_only_cycle "$root" "$home" \
+    || fail "homeless restart: the next park did not own the helm home's only cycle:"$'\n'"$(home_arms "$root")"$'\n'"$(cat "$home/state/.supervision-host.log")"
+  sleep 3
+  ! hook_exited "$home" || fail "homeless restart: the recovery was presented again: $(cat "$home/hook.err")"
+  { watcher_live "$home" && beacon_fresh "$home"; } || fail "homeless restart: the parked cycle is not healthy"
+  [ "$(grep -c 'rearm-resurface' "$home/state/.supervision-host.log")" -eq 1 ] \
+    || fail "homeless restart: expected exactly one recovery presentation: $(cat "$home/state/.supervision-host.log")"
+  ! watcher_live "$root" || fail "homeless restart: a watcher runs in the code root's home"
+  : > "$home/session.stop"
+  pass "host+hook: a session launched without FM_HOME supervises its helm home and parks after one acknowledgeable recovery"
+}
+
 fm_test_run \
   test_main_only_close_after_handled_turn_restores_inherited_handling \
   test_main_only_close_after_handled_turn_delivers_restore_failure \
@@ -712,4 +827,5 @@ fm_test_run \
   test_pass_through_successor_survives_the_hook_process_group_teardown \
   test_next_park_takes_over_the_cycle_a_pass_through_left_for_main \
   test_a_park_stopped_mid_take_over_leaves_the_take_over_to_the_next_park \
-  test_unrecorded_successor_is_stopped_rather_than_left_for_main
+  test_unrecorded_successor_is_stopped_rather_than_left_for_main \
+  test_session_launched_without_fm_home_supervises_its_helm_home

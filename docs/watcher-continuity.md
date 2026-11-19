@@ -97,6 +97,9 @@ The script header owns the storm-bound mechanics, [configuration](configuration.
 
 ### Claude session-lock ownership
 
+A hook started without `FM_HOME`, such as one from a session resumed outside its launcher, first follows the home its session last took the helm of with an explicit `FM_HOME`; the helm record in `bin/fm-session-lock-lib.sh` owns that rule.
+Without it, the hook would reclaim the code root's own home and present wakes from there that the model, working its helm home, can never acknowledge.
+
 The hook handles the session lock as follows:
 
 - A well-formed session-lock owner is a numeric PID, or a tagged `win:<pid>` value on a Cygwin-family Git Bash host.
@@ -549,6 +552,7 @@ It checks that a newly appended keyed decision is classified without rereading e
 - Unchanged AFK and need boundaries.
 - Single-flight.
 - Supersession of a dead session's orphaned claim by the replacement session's first Stop, including a resumed session that carries the dead one's conversation id, and a claim with no readable session lock.
+- A session launched or resumed without `FM_HOME` that supervises its helm home rather than the code root's stale home, and parks after one acknowledgeable recovery, in `tests/fm-supervision-host-hook.test.sh`; the helm record's explicit-`FM_HOME`, `/clear`, superseded-home, and fallback-helm cases are in `tests/fm-session-lock-ancestry.test.sh`.
 - A recycled background bridge keeping its live claim on the trusted session id pinned to the lock holder's recorded session-lock identity.
 - The Windows/Git Bash session-lock readers for the supervision-host key, claim read-back, and mid-turn health, plus untagged-value parity with the numeric helpers, in `tests/fm-session-lock-windows-consumers.test.sh`.
 - The ps-free identity route and its fail-closed refusals when the `ps` binary cannot execute, in `tests/fm-session-lock-ps-denied.test.sh`.

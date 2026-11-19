@@ -29,7 +29,7 @@ Start with the directory layout, then use the setting reference for the behavior
 
 When `FM_HOME` is unset, most scripts use the repo root as the home.
 When it is set, scripts still run from this repo's `bin/`, while `state/`, `data/`, `config/`, and `projects/` come from `$FM_HOME`.
-A Claude primary's SessionStart, Stop, StopFailure, and UserPromptSubmit hooks are the exception: started without `FM_HOME`, they follow the home their session last took the helm of with an explicit `FM_HOME` (`bin/fm-session-lock-lib.sh` owns that record), so resuming a session outside its launcher keeps supervising that home.
+A Claude primary's SessionStart, Stop, StopFailure, UserPromptSubmit, and PreToolUse hooks are the exception: started without `FM_HOME`, they follow the home their session last took the helm of with an explicit `FM_HOME` (`bin/fm-session-lock-lib.sh` owns that record), so resuming a session outside its launcher keeps supervising that home.
 Start or resume a primary with `FM_HOME` in its environment all the same, because the model's own commands still default to the repo root.
 
 ### Root and directory overrides

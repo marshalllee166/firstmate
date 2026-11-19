@@ -1657,6 +1657,48 @@ test_reanchor_keeps_autoarm_midturn_healthy() {
   pass "session-lock: a re-anchor during a rewake turn keeps the mid-turn auto-arm proof healthy"
 }
 
+# A Claude hook started without FM_HOME follows the home its session took the
+# helm of. The probe is the real session-start nudge, which stays silent only
+# when this session holds the home it resolved. The code root's own home is
+# held by nobody unless a case says so, and the helm home by this session.
+test_claude_hooks_without_fm_home_follow_the_session_helm() {
+  local dir root home other out
+  dir="$TMP_ROOT/helm"
+  root="$dir/root"
+  home="$dir/home"
+  mkdir -p "$root/state" "$home/state"
+  git init -q "$root"
+  : > "$root/AGENTS.md"
+  ln -s "$ROOT/bin" "$root/bin"
+  sleep 60 &
+  other=$!
+  out=$(env -u FM_HOME -u FM_STATE_OVERRIDE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PID \
+    FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" HELM="$home" OTHER="$other" "$NAMED_CLAUDE" -c '
+      export CLAUDE_PID=$$ CLAUDE_CODE_SESSION_ID=sess-helm
+      nudge() { "$FM_ROOT_OVERRIDE/bin/fm-sessionstart-nudge.sh" | grep -c fm-session-start; }
+      FM_HOME="$HELM" "$FM_ROOT_OVERRIDE/bin/fm-lock.sh" >/dev/null || exit 91
+      printf "follow=%s\n" "$(nudge)"
+      printf "explicit=%s\n" "$(FM_HOME="$FM_ROOT_OVERRIDE" nudge)"
+      CLAUDE_CODE_SESSION_ID=sess-helm-cleared
+      printf "cleared=%s\n" "$(nudge)"
+      CLAUDE_CODE_SESSION_ID=sess-helm
+      printf "%s\n" "$$" > "$FM_ROOT_OVERRIDE/state/.lock"
+      printf "%s\n" "$OTHER" > "$HELM/state/.lock"
+      printf "sess-other\n" > "$HELM/state/.lock-session"
+      printf "foreign=%s\n" "$(nudge)"
+      printf "sess-helm\n" > "$HELM/state/.lock-session"
+      "$FM_ROOT_OVERRIDE/bin/fm-lock.sh" >/dev/null || exit 92
+      printf "fallback=%s\n" "$(nudge)"
+    ' 2>&1) || { kill "$other" 2>/dev/null; fail "helm: the fixture session failed: $out"; }
+  kill "$other" 2>/dev/null || true
+  assert_contains "$out" "follow=0" "a hook without FM_HOME did not follow the session's helm home"
+  assert_contains "$out" "explicit=1" "an explicit FM_HOME did not win over the helm record"
+  assert_contains "$out" "cleared=0" "a /clear re-key lost the helm home this process holds"
+  assert_contains "$out" "foreign=0" "a helm home whose lock now names another session was still followed"
+  assert_contains "$out" "fallback=0" "taking the code root's own helm did not retire the record"
+  pass "session-lock: Claude hooks without FM_HOME follow the session's helm home, and only while it is the session's"
+}
+
 test_version_named_session_is_identified_on_both_platforms
 test_harness_at_namespace_pid1_is_examined
 test_bun_run_omp_is_identified_on_both_platforms
@@ -1687,3 +1729,4 @@ test_failed_lock_write_removes_new_sidecar_when_none_existed
 test_verified_reclaim_keeps_new_sidecar
 test_reanchor_keeps_task_leases_live
 test_reanchor_keeps_autoarm_midturn_healthy
+test_claude_hooks_without_fm_home_follow_the_session_helm

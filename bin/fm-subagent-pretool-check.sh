@@ -178,6 +178,11 @@ done
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P) || exit 0
 FM_ROOT=${FM_ROOT_OVERRIDE:-$(CDPATH='' cd -- "$SCRIPT_DIR/.." 2>/dev/null && pwd -P)} || exit 0
+# Without FM_HOME, a Claude session follows the home it took the helm of.
+# shellcheck source=bin/fm-session-lock-lib.sh
+if . "$SCRIPT_DIR/fm-session-lock-lib.sh" 2>/dev/null; then
+  fm_claude_session_helm_home "$FM_ROOT" || true
+fi
 FM_HOME=${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}
 STATE=${FM_STATE_OVERRIDE:-$FM_HOME/state}
 
